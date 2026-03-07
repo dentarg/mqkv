@@ -33,6 +33,15 @@ RSpec.describe MQKV::Store, :integration do
     end
   end
 
+  describe "confirm: false" do
+    let(:store) { described_class.new(url, prefix: prefix, read_timeout: 0.3, confirm: false) }
+
+    it "set and get work without confirms" do
+      store.set("fast", "value")
+      expect(store.get("fast")).to eq("value")
+    end
+  end
+
   describe "delete and exists?" do
     it "deletes a key" do
       store.set("k3", "world")
@@ -70,6 +79,44 @@ RSpec.describe MQKV::Store, :integration do
       store.set("h3", "2")
       store.set("h3", "3")
       expect(store.history("h3", limit: 2)).to eq(%w[2 3])
+    end
+  end
+
+  describe "#preload" do
+    it "serves get from cache after preload" do
+      store.set("p1", "cached")
+      store.preload("p1")
+      expect(store.get("p1")).to eq("cached")
+    end
+
+    it "updates cache on local set" do
+      store.preload("p2")
+      store.set("p2", "new")
+      expect(store.get("p2")).to eq("new")
+    end
+
+    it "receives updates from other connections" do
+      store.preload("p3")
+
+      writer = described_class.new(url, prefix: prefix, read_timeout: 0.3)
+      writer.set("p3", "external")
+      sleep 0.3
+      writer.close
+
+      expect(store.get("p3")).to eq("external")
+    end
+
+    it "tracks deletes from other connections" do
+      store.set("p4", "value")
+      store.preload("p4")
+      expect(store.get("p4")).to eq("value")
+
+      writer = described_class.new(url, prefix: prefix, read_timeout: 0.3)
+      writer.delete("p4")
+      sleep 0.3
+      writer.close
+
+      expect(store.get("p4")).to be_nil
     end
   end
 

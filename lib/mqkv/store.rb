@@ -26,10 +26,10 @@ module MQKV
       name = queue_name(key)
       ensure_stream(name)
       publish(name, value.to_s)
-      log(:debug, "at=set key=#{key} queue=#{name}")
+      log(:debug) { "at=set key=#{key} queue=#{name}" }
       if @cache
         @cache_mutex.synchronize { @cache[key] = value.to_s }
-        log(:debug, "at=set key=#{key} cache=updated")
+        log(:debug) { "at=set key=#{key} cache=updated" }
         start_cache_watcher(key)
       end
       nil
@@ -39,12 +39,12 @@ module MQKV
       if @cache
         @cache_mutex.synchronize do
           if @cache.key?(key)
-            log(:debug, "at=get key=#{key} source=cache")
+            log(:debug) { "at=get key=#{key} source=cache" }
             return @cache[key]
           end
         end
       end
-      log(:debug, "at=get key=#{key} source=stream")
+      log(:debug) { "at=get key=#{key} source=stream" }
       resolve_current(consume_stream(queue_name(key), offset: "last"))
     end
 
@@ -52,10 +52,10 @@ module MQKV
       name = queue_name(key)
       ensure_stream(name)
       publish_tombstone(name)
-      log(:debug, "at=delete key=#{key} queue=#{name}")
+      log(:debug) { "at=delete key=#{key} queue=#{name}" }
       if @cache
         @cache_mutex.synchronize { @cache[key] = nil }
-        log(:debug, "at=delete key=#{key} cache=tombstoned")
+        log(:debug) { "at=delete key=#{key} cache=tombstoned" }
         start_cache_watcher(key)
       end
       nil
@@ -84,7 +84,7 @@ module MQKV
         messages = consume_stream(queue_name(key), offset: "first", max_messages: max_messages)
         value = resolve_current(messages)
         @cache_mutex.synchronize { @cache[key] = value }
-        log(:debug, "at=preload key=#{key} messages=#{messages.size} value=#{value.nil? ? "nil" : "present"}")
+        log(:debug) { "at=preload key=#{key} messages=#{messages.size} value=#{value.nil? ? "nil" : "present"}" }
         start_cache_watcher(key)
       end
     end
@@ -121,7 +121,7 @@ module MQKV
     end
 
     def close
-      log(:info, "at=close")
+      log(:info) { "at=close" }
       stop_cache_watchers
       @mutex.synchronize do
         @connection&.close
@@ -136,7 +136,7 @@ module MQKV
       @mutex.synchronize do
         return @connection if @connection && !@connection.closed?
 
-        log(:info, "at=connect url=#{@url}")
+        log(:info) { "at=connect url=#{@url}" }
         @connection = AMQP::Client.new(@url).connect
         @declared_streams.clear
         @connection
@@ -155,7 +155,7 @@ module MQKV
         ch.queue_declare(name, durable: true, arguments: { "x-queue-type" => "stream" })
       end
       @mutex.synchronize { @declared_streams.add(name) }
-      log(:debug, "at=ensure_stream queue=#{name} status=declared")
+      log(:debug) { "at=ensure_stream queue=#{name} status=declared" }
     end
 
     def publish(name, body, **properties)
@@ -229,7 +229,7 @@ module MQKV
         @cache_mutex.synchronize do
           new_value = tombstone?(msg) ? nil : msg.body
           @cache[key] = new_value
-          log(:debug, "at=cache_watcher key=#{key} value=#{new_value.nil? ? "nil" : "present"}")
+          log(:debug) { "at=cache_watcher key=#{key} value=#{new_value.nil? ? "nil" : "present"}" }
         end
       end
       handle = WatchHandle.new(channel: ch, consumer_tag: consume_ok.consumer_tag)
@@ -246,7 +246,7 @@ module MQKV
       if duplicate
         unwatch(handle)
       else
-        log(:debug, "at=cache_watcher key=#{key} status=started")
+        log(:debug) { "at=cache_watcher key=#{key} status=started" }
       end
     end
 
@@ -257,7 +257,7 @@ module MQKV
         @cache = nil
         result
       end
-      log(:debug, "at=stop_cache_watchers count=#{watchers.size}") if watchers.any?
+      log(:debug) { "at=stop_cache_watchers count=#{watchers.size}" } if watchers.any?
       watchers.each do |handle|
         unwatch(handle)
       rescue StandardError
@@ -265,8 +265,8 @@ module MQKV
       end
     end
 
-    def log(level, message)
-      @logger&.send(level, message)
+    def log(level, &block)
+      @logger&.send(level, &block)
     end
   end
 end

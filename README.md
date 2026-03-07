@@ -6,7 +6,7 @@ Each key maps to a dedicated stream queue. The latest message is the current val
 
 ## Requirements
 
-- Ruby >= 3.2
+- Ruby >= 3.3
 - RabbitMQ 3.9+ with streams enabled, or LavinMQ
 
 ## Installation

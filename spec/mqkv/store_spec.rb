@@ -62,6 +62,17 @@ RSpec.describe MQKV::Store do
     end
   end
 
+  describe "#set with confirm: false" do
+    let(:store) { described_class.new(url, prefix: "test", confirm: false) }
+
+    it "uses basic_publish without confirmation" do
+      allow(channel).to receive(:basic_publish)
+      store.set("mykey", "myvalue")
+      expect(channel).to have_received(:basic_publish)
+        .with("myvalue", exchange: "", routing_key: "test.mykey")
+    end
+  end
+
   describe "#get" do
     it "returns nil when no messages" do
       allow(store).to receive(:consume_stream).and_return([])
@@ -135,6 +146,67 @@ RSpec.describe MQKV::Store do
     it "returns empty array when no messages" do
       allow(store).to receive(:consume_stream).and_return([])
       expect(store.history("key")).to eq([])
+    end
+  end
+
+  describe "#preload" do
+    it "populates cache from stream messages" do
+      msgs = [make_msg("a"), make_msg("b")]
+      allow(store).to receive(:consume_stream)
+        .with("test.key", offset: "first", max_messages: 10_000)
+        .and_return(msgs)
+      allow(store).to receive(:start_cache_watcher)
+      store.preload("key")
+      expect(store.get("key")).to eq("b")
+    end
+
+    it "resolves tombstones during preload" do
+      msgs = [make_msg("a"), make_msg("", tombstone: true)]
+      allow(store).to receive(:consume_stream).and_return(msgs)
+      allow(store).to receive(:start_cache_watcher)
+      store.preload("key")
+      expect(store.get("key")).to be_nil
+    end
+
+    it "returns cached value without calling consume_stream" do
+      allow(store).to receive(:consume_stream).and_return([make_msg("cached")])
+      allow(store).to receive(:start_cache_watcher)
+      store.preload("key")
+
+      # Reset consume_stream expectations - get should NOT call it
+      allow(store).to receive(:consume_stream).and_raise("should not be called")
+      expect(store.get("key")).to eq("cached")
+    end
+
+    it "falls back to stream for non-cached keys" do
+      allow(store).to receive(:consume_stream).and_return([])
+      allow(store).to receive(:start_cache_watcher)
+      store.preload("cached")
+
+      allow(store).to receive(:consume_stream)
+        .with("test.other", offset: "last")
+        .and_return([make_msg("from-stream")])
+      expect(store.get("other")).to eq("from-stream")
+    end
+  end
+
+  describe "cache updates via set/delete" do
+    before do
+      allow(store).to receive(:consume_stream).and_return([])
+      allow(store).to receive(:start_cache_watcher)
+      store.preload("key")
+      allow(channel).to receive(:basic_publish_confirm).and_return(true)
+    end
+
+    it "updates cache on set" do
+      store.set("key", "new-value")
+      expect(store.get("key")).to eq("new-value")
+    end
+
+    it "sets cache to nil on delete" do
+      store.set("key", "value")
+      store.delete("key")
+      expect(store.get("key")).to be_nil
     end
   end
 

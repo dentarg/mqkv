@@ -65,13 +65,16 @@ MQKV::Store.new(
   "amqp://localhost",
   prefix: "myapp",       # Queue name prefix (default: "mqkv")
   read_timeout: 0.5,      # Seconds to wait when draining stream (default: 0.5)
-  confirm: true            # Publisher confirms on set/delete (default: true)
+  confirm: true,           # Publisher confirms on set/delete (default: true)
+  logger: Logger.new($stdout, level: :debug)  # Optional logger (default: nil)
 )
 ```
 
 The `prefix` is combined with the key to form queue names: `{prefix}.{key}`.
 
 Set `confirm: false` for fire-and-forget writes when durability isn't critical (e.g. caching). Skips the confirm round-trip for faster SETs.
+
+Pass a `Logger` instance via `logger:` to enable debug logging. Log output uses logfmt format and covers connections, stream declarations, cache updates, set/get/delete operations, and watcher lifecycle events.
 
 ## Preloading (Cached Reads)
 

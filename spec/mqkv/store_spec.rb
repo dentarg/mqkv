@@ -210,6 +210,27 @@ RSpec.describe MQKV::Store do
     end
   end
 
+  describe "logging" do
+    let(:log_output) { StringIO.new }
+    let(:logger) { Logger.new(log_output, level: :debug) }
+    let(:store) { described_class.new(url, prefix: "test", logger: logger) }
+
+    it "logs set, get, and connect when logger is provided" do
+      allow(channel).to receive(:basic_publish_confirm).and_return(true)
+      allow(store).to receive(:consume_stream).and_return([make_msg("val")])
+
+      store.set("k", "v")
+      store.get("k")
+      store.close
+
+      output = log_output.string
+      expect(output).to include("at=connect")
+      expect(output).to include("at=set key=k")
+      expect(output).to include("at=get key=k source=stream")
+      expect(output).to include("at=close")
+    end
+  end
+
   describe "stream declaration caching" do
     it "only declares once per queue name" do
       allow(channel).to receive(:basic_publish_confirm).and_return(true)

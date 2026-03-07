@@ -7,6 +7,18 @@ module MQKV
   class Store
     WatchHandle = Data.define(:channel, :consumer_tag)
 
+    CacheEntry = Data.define(:value, :expires_at) do
+      def current_value
+        return nil if value.nil?
+        return nil if expires_at && Process.clock_gettime(Process::CLOCK_REALTIME) >= expires_at
+
+        value
+      end
+    end
+
+    TOMBSTONE_HEADER = "__mqkv_deleted__"
+    EXPIRES_HEADER = "__mqkv_expires_at__"
+
     def initialize(url, prefix: "mqkv", read_timeout: 0.5, confirm: true)
       @url = url
       @prefix = prefix
@@ -20,12 +32,14 @@ module MQKV
       @cache_watchers = {}
     end
 
-    def set(key, value)
+    def set(key, value, ttl: nil)
       name = queue_name(key)
       ensure_stream(name)
-      publish(name, value.to_s)
+      expires_at = ttl ? Process.clock_gettime(Process::CLOCK_REALTIME) + ttl : nil
+      headers = expires_at ? { EXPIRES_HEADER => expires_at } : nil
+      publish(name, value.to_s, headers: headers)
       if @cache
-        @cache_mutex.synchronize { @cache[key] = value.to_s }
+        @cache_mutex.synchronize { @cache[key] = CacheEntry.new(value: value.to_s, expires_at: expires_at) }
         start_cache_watcher(key)
       end
       nil
@@ -33,7 +47,7 @@ module MQKV
 
     def get(key)
       if @cache
-        @cache_mutex.synchronize { return @cache[key] if @cache.key?(key) }
+        @cache_mutex.synchronize { return @cache[key].current_value if @cache.key?(key) }
       end
       resolve_current(consume_stream(queue_name(key), offset: "last"))
     end
@@ -43,7 +57,7 @@ module MQKV
       ensure_stream(name)
       publish_tombstone(name)
       if @cache
-        @cache_mutex.synchronize { @cache[key] = nil }
+        @cache_mutex.synchronize { @cache[key] = CacheEntry.new(value: nil, expires_at: nil) }
         start_cache_watcher(key)
       end
       nil
@@ -70,8 +84,8 @@ module MQKV
       @cache_mutex.synchronize { @cache ||= {} }
       keys.each do |key|
         messages = consume_stream(queue_name(key), offset: "first", max_messages: max_messages)
-        value = resolve_current(messages)
-        @cache_mutex.synchronize { @cache[key] = value }
+        entry = resolve_entry(messages)
+        @cache_mutex.synchronize { @cache[key] = entry }
         start_cache_watcher(key)
       end
     end
@@ -143,6 +157,7 @@ module MQKV
     end
 
     def publish(name, body, **properties)
+      properties.compact!
       connection.with_channel do |ch|
         if @confirm
           ch.basic_publish_confirm(body, exchange: "", routing_key: name, **properties)
@@ -153,7 +168,7 @@ module MQKV
     end
 
     def publish_tombstone(name)
-      publish(name, "", headers: { "__mqkv_deleted__" => true })
+      publish(name, "", headers: { TOMBSTONE_HEADER => true })
     end
 
     def consume_stream(name, offset:, max_messages: 0)
@@ -186,17 +201,33 @@ module MQKV
       end
     end
 
-    def resolve_current(messages)
-      return nil if messages.empty?
+    def resolve_entry(messages)
+      return CacheEntry.new(value: nil, expires_at: nil) if messages.empty?
 
       last = messages.last
-      return nil if tombstone?(last)
+      return CacheEntry.new(value: nil, expires_at: nil) if tombstone?(last)
 
-      last.body
+      CacheEntry.new(value: last.body, expires_at: msg_expires_at(last))
+    end
+
+    def resolve_current(messages)
+      resolve_entry(messages).current_value
     end
 
     def tombstone?(msg)
-      msg.properties&.headers&.fetch("__mqkv_deleted__", false) == true
+      msg.properties&.headers&.fetch(TOMBSTONE_HEADER, false) == true
+    end
+
+    def msg_expires_at(msg)
+      msg.properties&.headers&.fetch(EXPIRES_HEADER, nil)
+    end
+
+    def msg_to_cache_entry(msg)
+      if tombstone?(msg)
+        CacheEntry.new(value: nil, expires_at: nil)
+      else
+        CacheEntry.new(value: msg.body, expires_at: msg_expires_at(msg))
+      end
     end
 
     def start_cache_watcher(key)
@@ -210,9 +241,8 @@ module MQKV
                                     arguments: { "x-stream-offset" => "next" },
                                     worker_threads: 1) do |msg|
         msg.ack
-        @cache_mutex.synchronize do
-          @cache[key] = tombstone?(msg) ? nil : msg.body
-        end
+        entry = msg_to_cache_entry(msg)
+        @cache_mutex.synchronize { @cache[key] = entry }
       end
       handle = WatchHandle.new(channel: ch, consumer_tag: consume_ok.consumer_tag)
 

@@ -37,6 +37,12 @@ store.exists?("user:1:name")  # => true
 store.delete("user:1:name")
 store.get("user:1:name")  # => nil
 
+# Set with TTL (seconds) - expires on read
+store.set("session", "abc123", ttl: 3600)
+store.get("session")  # => "abc123"
+# ... after 1 hour ...
+store.get("session")  # => nil
+
 # Value history (tombstones clear accumulated history)
 store.set("counter", "1")
 store.set("counter", "2")
@@ -95,8 +101,8 @@ Keys that are `set` or `delete`d after preload also get background watchers auto
 ## How It Works
 
 - **Queues**: Each key gets a durable stream queue (`x-queue-type: stream`)
-- **SET**: Publishes a message to the key's queue (with or without publisher confirms)
-- **GET**: Returns from cache if preloaded; otherwise consumes from `x-stream-offset: last` and drains
+- **SET**: Publishes a message to the key's queue (with or without publisher confirms). Optional `ttl:` stores an expiration timestamp in a header.
+- **GET**: Returns from cache if preloaded; otherwise consumes from `x-stream-offset: last` and drains. Expired messages return nil.
 - **DELETE**: Publishes a tombstone (header `__mqkv_deleted__: true`, empty body)
 - **EXISTS?**: Delegates to GET, returns boolean
 - **HISTORY**: Consumes from `x-stream-offset: first`, accumulates values, tombstones clear history

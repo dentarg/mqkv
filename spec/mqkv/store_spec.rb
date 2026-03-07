@@ -18,9 +18,11 @@ RSpec.describe MQKV::Store do
     allow(channel).to receive(:queue_declare)
   end
 
-  def make_msg(body, tombstone: false)
-    headers = tombstone ? { "__mqkv_deleted__" => true } : nil
-    double("Message", body: body, properties: double("Properties", headers: headers))
+  def make_msg(body, tombstone: false, expires_at: nil)
+    headers = {}
+    headers["__mqkv_deleted__"] = true if tombstone
+    headers["__mqkv_expires_at__"] = expires_at if expires_at
+    double("Message", body: body, properties: double("Properties", headers: headers.empty? ? nil : headers))
   end
 
   describe "queue naming" do
@@ -60,6 +62,13 @@ RSpec.describe MQKV::Store do
       expect(channel).to have_received(:basic_publish_confirm)
         .with("42", exchange: "", routing_key: "test.num")
     end
+
+    it "publishes with expires_at header when ttl given" do
+      store.set("mykey", "myvalue", ttl: 60)
+      expect(channel).to have_received(:basic_publish_confirm)
+        .with("myvalue", exchange: "", routing_key: "test.mykey",
+              headers: hash_including("__mqkv_expires_at__" => a_kind_of(Numeric)))
+    end
   end
 
   describe "#set with confirm: false" do
@@ -90,6 +99,18 @@ RSpec.describe MQKV::Store do
       allow(store).to receive(:consume_stream)
         .and_return([make_msg("", tombstone: true)])
       expect(store.get("key")).to be_nil
+    end
+
+    it "returns nil for expired message" do
+      expired = make_msg("old", expires_at: Process.clock_gettime(Process::CLOCK_REALTIME) - 1)
+      allow(store).to receive(:consume_stream).and_return([expired])
+      expect(store.get("key")).to be_nil
+    end
+
+    it "returns body for non-expired message" do
+      future = make_msg("fresh", expires_at: Process.clock_gettime(Process::CLOCK_REALTIME) + 3600)
+      allow(store).to receive(:consume_stream).and_return([future])
+      expect(store.get("key")).to eq("fresh")
     end
 
     it "uses the last message when multiple are returned" do
@@ -173,7 +194,6 @@ RSpec.describe MQKV::Store do
       allow(store).to receive(:start_cache_watcher)
       store.preload("key")
 
-      # Reset consume_stream expectations - get should NOT call it
       allow(store).to receive(:consume_stream).and_raise("should not be called")
       expect(store.get("key")).to eq("cached")
     end
@@ -207,6 +227,54 @@ RSpec.describe MQKV::Store do
       store.set("key", "value")
       store.delete("key")
       expect(store.get("key")).to be_nil
+    end
+  end
+
+  describe "TTL in cache" do
+    before do
+      allow(store).to receive(:consume_stream).and_return([])
+      allow(store).to receive(:start_cache_watcher)
+      store.preload("key")
+      allow(channel).to receive(:basic_publish_confirm).and_return(true)
+    end
+
+    it "returns value before expiry" do
+      store.set("key", "temp", ttl: 3600)
+      expect(store.get("key")).to eq("temp")
+    end
+
+    it "returns nil after expiry" do
+      store.set("key", "temp", ttl: 0)
+      sleep 0.01
+      expect(store.get("key")).to be_nil
+    end
+  end
+
+  describe "CacheEntry" do
+    it "returns value when not expired" do
+      entry = described_class::CacheEntry.new(value: "hello", expires_at: nil)
+      expect(entry.current_value).to eq("hello")
+    end
+
+    it "returns nil for tombstone entry" do
+      entry = described_class::CacheEntry.new(value: nil, expires_at: nil)
+      expect(entry.current_value).to be_nil
+    end
+
+    it "returns nil when expired" do
+      entry = described_class::CacheEntry.new(
+        value: "old",
+        expires_at: Process.clock_gettime(Process::CLOCK_REALTIME) - 1
+      )
+      expect(entry.current_value).to be_nil
+    end
+
+    it "returns value when not yet expired" do
+      entry = described_class::CacheEntry.new(
+        value: "fresh",
+        expires_at: Process.clock_gettime(Process::CLOCK_REALTIME) + 3600
+      )
+      expect(entry.current_value).to eq("fresh")
     end
   end
 

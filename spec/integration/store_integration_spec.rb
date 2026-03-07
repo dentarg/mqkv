@@ -11,7 +11,10 @@ RSpec.describe MQKV::Store, :integration do
   let(:prefix) { "mqkv-test-#{SecureRandom.hex(4)}" }
   let(:store) { described_class.new(url, prefix: prefix, read_timeout: 0.3) }
 
-  after { store.close }
+  after do
+    store.purge!
+    store.close
+  end
 
   describe "set and get" do
     it "stores and retrieves a value" do

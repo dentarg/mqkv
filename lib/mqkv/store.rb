@@ -81,6 +81,17 @@ module MQKV
       handle.channel.close
     end
 
+    def purge!
+      conn = @mutex.synchronize { @connection }
+      return unless conn && !conn.closed?
+
+      streams = @mutex.synchronize { @declared_streams.to_a }
+      conn.with_channel do |ch|
+        streams.each { |name| ch.queue_delete(name) }
+      end
+      @mutex.synchronize { @declared_streams.clear }
+    end
+
     def close
       @mutex.synchronize do
         @connection&.close

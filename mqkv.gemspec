@@ -10,6 +10,7 @@ Gem::Specification.new do |spec|
   spec.description = "Uses AMQP stream queues (RabbitMQ 3.9+ / LavinMQ) as a key-value store. " \
                      "Each key maps to a dedicated stream queue; the latest message is the current value."
   spec.license = "MIT"
+  spec.homepage = "https://github.com/dentarg/mqkv"
   spec.required_ruby_version = ">= 3.3"
   spec.files = Dir["lib/**/*.rb"]
   spec.require_paths = ["lib"]

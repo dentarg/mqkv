@@ -120,6 +120,23 @@ RSpec.describe MQKV::Store, :integration do
     end
   end
 
+  describe "TTL" do
+    it "returns value before expiry and nil after" do
+      store.set("ttl1", "temp", ttl: 0.5)
+      expect(store.get("ttl1")).to eq("temp")
+      sleep 0.6
+      expect(store.get("ttl1")).to be_nil
+    end
+
+    it "works with cached mode" do
+      store.set("ttl2", "temp", ttl: 0.5)
+      store.preload("ttl2")
+      expect(store.get("ttl2")).to eq("temp")
+      sleep 0.6
+      expect(store.get("ttl2")).to be_nil
+    end
+  end
+
   describe "watch and unwatch" do
     it "receives new values via watch" do
       received = []

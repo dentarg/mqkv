@@ -63,11 +63,14 @@ RSpec.describe MQKV::Store do
         .with("42", exchange: "", routing_key: "test.num")
     end
 
-    it "publishes with expires_at header when ttl given" do
+    it "publishes with expires_at header and declares with x-max-age when ttl given" do
       store.set("mykey", "myvalue", ttl: 60)
       expect(channel).to have_received(:basic_publish_confirm)
         .with("myvalue", exchange: "", routing_key: "test.mykey",
               headers: hash_including("__mqkv_expires_at__" => a_kind_of(Numeric)))
+      expect(channel).to have_received(:queue_declare)
+        .with("test.mykey", durable: true,
+              arguments: { "x-queue-type" => "stream", "x-max-age" => "60s" })
     end
   end
 

@@ -37,7 +37,7 @@ store.exists?("user:1:name")  # => true
 store.delete("user:1:name")
 store.get("user:1:name")  # => nil
 
-# Set with TTL (seconds) - expires on read
+# Set with TTL (seconds) - expires on read, broker cleans up via x-max-age
 store.set("session", "abc123", ttl: 3600)
 store.get("session")  # => "abc123"
 # ... after 1 hour ...
@@ -101,7 +101,7 @@ Keys that are `set` or `delete`d after preload also get background watchers auto
 ## How It Works
 
 - **Queues**: Each key gets a durable stream queue (`x-queue-type: stream`)
-- **SET**: Publishes a message to the key's queue (with or without publisher confirms). Optional `ttl:` stores an expiration timestamp in a header.
+- **SET**: Publishes a message to the key's queue (with or without publisher confirms). Optional `ttl:` stores an expiration timestamp in a header and declares the stream with `x-max-age` for broker-level cleanup.
 - **GET**: Returns from cache if preloaded; otherwise consumes from `x-stream-offset: last` and drains. Expired messages return nil.
 - **DELETE**: Publishes a tombstone (header `__mqkv_deleted__: true`, empty body)
 - **EXISTS?**: Delegates to GET, returns boolean

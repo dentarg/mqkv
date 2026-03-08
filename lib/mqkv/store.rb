@@ -34,7 +34,8 @@ module MQKV
 
     def set(key, value, ttl: nil)
       name = queue_name(key)
-      ensure_stream(name)
+      max_age = ttl ? "#{ttl.ceil}s" : nil
+      ensure_stream(name, max_age: max_age)
       expires_at = ttl ? Process.clock_gettime(Process::CLOCK_REALTIME) + ttl : nil
       headers = expires_at ? { EXPIRES_HEADER => expires_at } : nil
       publish(name, value.to_s, headers: headers)
@@ -146,12 +147,15 @@ module MQKV
       "#{@prefix}.#{key}"
     end
 
-    def ensure_stream(name)
+    def ensure_stream(name, max_age: nil)
       already_declared = @mutex.synchronize { @declared_streams.include?(name) }
       return if already_declared
 
+      args = { "x-queue-type" => "stream" }
+      args["x-max-age"] = max_age if max_age
+
       connection.with_channel do |ch|
-        ch.queue_declare(name, durable: true, arguments: { "x-queue-type" => "stream" })
+        ch.queue_declare(name, durable: true, arguments: args)
       end
       @mutex.synchronize { @declared_streams.add(name) }
     end

@@ -300,6 +300,23 @@ RSpec.describe MQKV::Store do
       expect(output).to include("at=get key=k source=stream")
       expect(output).to include("at=close")
     end
+
+    it "does not log credentials from the AMQP URL" do
+      cred_url = "amqp://admin:s3cret@rabbit.example.com:5672/prod"
+      amqp = instance_double(AMQP::Client)
+      allow(AMQP::Client).to receive(:new).with(cred_url).and_return(amqp)
+      allow(amqp).to receive(:connect).and_return(conn)
+
+      cred_store = described_class.new(cred_url, prefix: "test", logger: logger)
+      allow(channel).to receive(:basic_publish_confirm).and_return(true)
+      cred_store.set("k", "v")
+
+      output = log_output.string
+      expect(output).to include("at=connect")
+      expect(output).to include("rabbit.example.com")
+      expect(output).not_to include("admin")
+      expect(output).not_to include("s3cret")
+    end
   end
 
   describe "stream declaration caching" do

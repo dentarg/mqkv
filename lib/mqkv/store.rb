@@ -151,7 +151,7 @@ module MQKV
       @mutex.synchronize do
         return @connection if @connection && !@connection.closed?
 
-        log(:info) { "at=connect url=#{@url}" }
+        log(:info) { "at=connect url=#{sanitized_url}" }
         @connection = AMQP::Client.new(@url).connect
         @declared_streams.clear
         @connection
@@ -296,6 +296,10 @@ module MQKV
       rescue StandardError
         nil
       end
+    end
+
+    def sanitized_url
+      @url.sub(%r{//[^@]+@}, "//")
     end
 
     def log(level, &block)

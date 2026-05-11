@@ -336,4 +336,30 @@ RSpec.describe MQKV::Store do
       expect(channel).to have_received(:queue_declare).twice
     end
   end
+
+  describe "connect_timeout" do
+    let(:amqp) { instance_double(AMQP::Client) }
+
+    before do
+      # Override the outer `before` block's stub so we can assert on the
+      # exact AMQP::Client.new invocation.
+      allow(AMQP::Client).to receive(:new).and_return(amqp)
+      allow(amqp).to receive(:connect).and_return(conn)
+      allow(channel).to receive(:basic_publish_confirm).and_return(true)
+    end
+
+    it "forwards connect_timeout to AMQP::Client.new when set" do
+      store = described_class.new(url, prefix: "test", connect_timeout: 5)
+      store.set("k", "v") # triggers connection setup
+
+      expect(AMQP::Client).to have_received(:new).with(url, connect_timeout: 5)
+    end
+
+    it "omits connect_timeout when not set so amqp-client's default applies" do
+      store = described_class.new(url, prefix: "test")
+      store.set("k", "v")
+
+      expect(AMQP::Client).to have_received(:new).with(url)
+    end
+  end
 end

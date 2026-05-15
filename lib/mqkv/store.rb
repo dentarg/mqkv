@@ -20,11 +20,11 @@ module MQKV
     TOMBSTONE_HEADER = "__mqkv_deleted__"
     EXPIRES_HEADER = "__mqkv_expires_at__"
 
-    def initialize(url, prefix: "mqkv", read_timeout: 0.5, connect_timeout: nil, confirm: true, cache_watchers: true, logger: nil)
+    def initialize(url, prefix: "mqkv", read_timeout: 0.5, client_options: {}, confirm: true, cache_watchers: true, logger: nil)
       @url = url
       @prefix = prefix
       @read_timeout = read_timeout
-      @connect_timeout = connect_timeout
+      @client_options = client_options
       @confirm = confirm
       @cache_watchers_enabled = cache_watchers
       @logger = logger
@@ -196,14 +196,10 @@ module MQKV
         return @connection if @connection && !@connection.closed?
 
         log(:info) { "at=connect url=#{sanitized_url}" }
-        @connection = AMQP::Client.new(@url, **client_options).connect
+        @connection = AMQP::Client.new(@url, **@client_options).connect
         @declared_streams.clear
         @connection
       end
-    end
-
-    def client_options
-      @connect_timeout ? { connect_timeout: @connect_timeout } : {}
     end
 
     def queue_name(key)

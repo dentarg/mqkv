@@ -437,7 +437,7 @@ RSpec.describe MQKV::Store do
     end
   end
 
-  describe "connect_timeout" do
+  describe "client_options" do
     let(:amqp) { instance_double(AMQP::Client) }
 
     before do
@@ -448,14 +448,16 @@ RSpec.describe MQKV::Store do
       allow(channel).to receive(:basic_publish_confirm).and_return(true)
     end
 
-    it "forwards connect_timeout to AMQP::Client.new when set" do
-      store = described_class.new(url, prefix: "test", connect_timeout: 5)
+    it "forwards client_options to AMQP::Client.new" do
+      store = described_class.new(url, prefix: "test",
+                                  client_options: { connect_timeout: 5, connection_name: "myapp" })
       store.set("k", "v") # triggers connection setup
 
-      expect(AMQP::Client).to have_received(:new).with(url, connect_timeout: 5)
+      expect(AMQP::Client).to have_received(:new)
+        .with(url, connect_timeout: 5, connection_name: "myapp")
     end
 
-    it "omits connect_timeout when not set so amqp-client's default applies" do
+    it "passes no extra options by default so amqp-client's defaults apply" do
       store = described_class.new(url, prefix: "test")
       store.set("k", "v")
 

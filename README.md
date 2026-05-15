@@ -65,10 +65,10 @@ MQKV::Store.new(
   "amqp://localhost",
   prefix: "myapp",          # Queue name prefix (default: "mqkv")
   read_timeout: 0.5,        # Seconds to wait when draining stream (default: 0.5)
-  connect_timeout: 5,       # TCP connect timeout in seconds (default: nil, which
-                            # falls back to amqp-client's 30s). Useful at boot to
-                            # fail fast on an unreachable broker instead of
-                            # blocking the caller for ~30s.
+  client_options: {         # Forwarded to AMQP::Client.new. See amqp-client.rb
+    connect_timeout: 5,     # for the full list (connect_timeout, connection_name,
+    connection_name: "app", # heartbeat, frame_max, etc.). Defaults to {} so
+  },                        # amqp-client's defaults apply.
   confirm: true,            # Publisher confirms on set/delete (default: true)
   cache_watchers: true,     # Spawn a background consumer per cached key so
                             # writes from other processes propagate into the

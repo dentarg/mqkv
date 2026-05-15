@@ -104,6 +104,23 @@ module MQKV
       end
     end
 
+    # Like `preload`, but reads from `x-stream-offset: last` so only the
+    # current value is consumed (plus anything appended during the brief
+    # `read_timeout` window). Use this when keys live in streams with long
+    # histories and callers only care about the latest value — `preload`'s
+    # `offset: "first"` would otherwise drain up to `max_messages` of
+    # accumulated history per key on every boot.
+    def preload_latest(*keys)
+      @cache_mutex.synchronize { @cache ||= {} }
+      keys.each do |key|
+        messages = consume_stream(queue_name(key), offset: "last")
+        entry = resolve_entry(messages)
+        @cache_mutex.synchronize { @cache[key] = entry }
+        log(:debug) { "at=preload_latest key=#{key} value=#{entry.current_value.nil? ? "nil" : "present"}" }
+        start_cache_watcher(key)
+      end
+    end
+
     def watch(key, &block)
       name = queue_name(key)
       ensure_stream(name)

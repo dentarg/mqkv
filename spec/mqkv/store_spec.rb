@@ -213,6 +213,46 @@ RSpec.describe MQKV::Store do
     end
   end
 
+  describe "#preload_latest" do
+    it "consumes from offset=last and caches the latest value" do
+      allow(store).to receive(:consume_stream)
+        .with("test.key", offset: "last")
+        .and_return([make_msg("current")])
+      allow(store).to receive(:start_cache_watcher)
+      store.preload_latest("key")
+      expect(store.get("key")).to eq("current")
+    end
+
+    it "caches nil when the latest message is a tombstone" do
+      allow(store).to receive(:consume_stream)
+        .with("test.key", offset: "last")
+        .and_return([make_msg("", tombstone: true)])
+      allow(store).to receive(:start_cache_watcher)
+      store.preload_latest("key")
+      expect(store.get("key")).to be_nil
+    end
+
+    it "caches nil for an empty stream" do
+      allow(store).to receive(:consume_stream)
+        .with("test.key", offset: "last")
+        .and_return([])
+      allow(store).to receive(:start_cache_watcher)
+      store.preload_latest("key")
+      expect(store.get("key")).to be_nil
+    end
+
+    it "subsequent reads come from the cache without consuming the stream" do
+      allow(store).to receive(:consume_stream)
+        .with("test.key", offset: "last")
+        .and_return([make_msg("cached")])
+      allow(store).to receive(:start_cache_watcher)
+      store.preload_latest("key")
+
+      allow(store).to receive(:consume_stream).and_raise("should not be called")
+      expect(store.get("key")).to eq("cached")
+    end
+  end
+
   describe "cache updates via set/delete" do
     before do
       allow(store).to receive(:consume_stream).and_return([])

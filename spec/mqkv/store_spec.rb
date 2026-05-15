@@ -462,4 +462,49 @@ RSpec.describe MQKV::Store do
       expect(AMQP::Client).to have_received(:new).with(url)
     end
   end
+
+  describe "cache_watchers: false" do
+    let(:store) { described_class.new(url, prefix: "test", cache_watchers: false) }
+
+    before do
+      allow(channel).to receive(:basic_publish_confirm).and_return(true)
+      allow(channel).to receive(:basic_consume)
+      allow(channel).to receive(:basic_ack)
+      allow(channel).to receive(:basic_cancel)
+      allow(channel).to receive(:basic_qos)
+    end
+
+    it "does not start a watcher on preload" do
+      allow(store).to receive(:consume_stream).and_return([make_msg("val")])
+      store.preload("k")
+      expect(channel).not_to have_received(:basic_consume)
+    end
+
+    it "does not start a watcher on preload_latest" do
+      allow(store).to receive(:consume_stream).and_return([make_msg("val")])
+      store.preload_latest("k")
+      expect(channel).not_to have_received(:basic_consume)
+    end
+
+    it "does not start a watcher on set after preload" do
+      allow(store).to receive(:consume_stream).and_return([make_msg("seed")])
+      store.preload("k")
+      store.set("k", "new")
+      expect(channel).not_to have_received(:basic_consume)
+    end
+
+    it "still updates the in-process cache on set" do
+      allow(store).to receive(:consume_stream).and_return([make_msg("seed")])
+      store.preload("k")
+      store.set("k", "updated")
+      expect(store.get("k")).to eq("updated")
+    end
+
+    it "still updates the in-process cache on delete" do
+      allow(store).to receive(:consume_stream).and_return([make_msg("seed")])
+      store.preload("k")
+      store.delete("k")
+      expect(store.get("k")).to be_nil
+    end
+  end
 end

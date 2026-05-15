@@ -113,6 +113,21 @@ This is much cheaper at boot when streams hold thousands of messages and callers
 
 Keys that are `set` or `delete`d after preload also get background watchers automatically. Non-preloaded keys fall back to stream consume on `get`.
 
+### Cache-only reads
+
+For callers that must not block on AMQP (e.g. request handlers that should render a "please wait" placeholder when the cache isn't ready), use `cached_get` and `cached?`:
+
+```ruby
+store.preload_latest("config:theme")
+
+store.cached_get("config:theme")  # => the cached value
+store.cached_get("missing")       # => nil (not in cache; no stream read)
+store.cached?("config:theme")     # => true
+store.cached?("missing")          # => false
+```
+
+`cached_get` returns the cached value if present (or nil for a tombstoned key) and never falls through to the stream. `cached?` lets you distinguish "tombstoned" (cached, value nil) from "not cached".
+
 ## How It Works
 
 - **Queues**: Each key gets a durable stream queue (`x-queue-type: stream`)

@@ -20,12 +20,13 @@ module MQKV
     TOMBSTONE_HEADER = "__mqkv_deleted__"
     EXPIRES_HEADER = "__mqkv_expires_at__"
 
-    def initialize(url, prefix: "mqkv", read_timeout: 0.5, connect_timeout: nil, confirm: true, logger: nil)
+    def initialize(url, prefix: "mqkv", read_timeout: 0.5, connect_timeout: nil, confirm: true, cache_watchers: true, logger: nil)
       @url = url
       @prefix = prefix
       @read_timeout = read_timeout
       @connect_timeout = connect_timeout
       @confirm = confirm
+      @cache_watchers_enabled = cache_watchers
       @logger = logger
       @mutex = Mutex.new
       @connection = nil
@@ -298,6 +299,8 @@ module MQKV
     end
 
     def start_cache_watcher(key)
+      return unless @cache_watchers_enabled
+
       @cache_mutex.synchronize { return if @cache_watchers.key?(key) }
 
       name = queue_name(key)

@@ -123,6 +123,66 @@ RSpec.describe MQKV::Store do
     end
   end
 
+  describe "#cached_get" do
+    it "returns nil when no cache has been initialised" do
+      expect(store.cached_get("anything")).to be_nil
+    end
+
+    it "returns the cached value after preload" do
+      allow(store).to receive(:consume_stream)
+        .and_return([make_msg("hello")])
+      allow(store).to receive(:start_cache_watcher)
+      store.preload("k")
+      expect(store.cached_get("k")).to eq("hello")
+    end
+
+    it "returns nil for a tombstoned key in the cache" do
+      allow(store).to receive(:consume_stream)
+        .and_return([make_msg("", tombstone: true)])
+      allow(store).to receive(:start_cache_watcher)
+      store.preload("k")
+      expect(store.cached_get("k")).to be_nil
+    end
+
+    it "returns nil for a key not in the cache and does not consume the stream" do
+      allow(store).to receive(:consume_stream).and_return([make_msg("ignored")])
+      allow(store).to receive(:start_cache_watcher)
+      store.preload("k1")
+
+      allow(store).to receive(:consume_stream).and_raise("should not be called")
+      expect(store.cached_get("k2")).to be_nil
+    end
+  end
+
+  describe "#cached?" do
+    it "is false when no cache has been initialised" do
+      expect(store.cached?("k")).to be false
+    end
+
+    it "is true for a cached value" do
+      allow(store).to receive(:consume_stream)
+        .and_return([make_msg("v")])
+      allow(store).to receive(:start_cache_watcher)
+      store.preload("k")
+      expect(store.cached?("k")).to be true
+    end
+
+    it "is still true for a tombstoned key" do
+      allow(store).to receive(:consume_stream)
+        .and_return([make_msg("", tombstone: true)])
+      allow(store).to receive(:start_cache_watcher)
+      store.preload("k")
+      expect(store.cached?("k")).to be true
+    end
+
+    it "is false for a key that was never preloaded or written" do
+      allow(store).to receive(:consume_stream).and_return([make_msg("v")])
+      allow(store).to receive(:start_cache_watcher)
+      store.preload("seen")
+      expect(store.cached?("unseen")).to be false
+    end
+  end
+
   describe "#delete" do
     it "publishes a tombstone message" do
       allow(channel).to receive(:basic_publish_confirm).and_return(true)

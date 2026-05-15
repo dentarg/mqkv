@@ -64,6 +64,31 @@ module MQKV
       resolve_current(consume_stream(queue_name(key), offset: "last"))
     end
 
+    # Cache-only read. Returns the cached value, or nil if the key has
+    # been tombstoned or isn't in the cache at all. Never falls through
+    # to the stream — intended for callers that want to decouple read
+    # latency from the broker (e.g. an HTTP handler that should show a
+    # placeholder when the cache isn't ready yet rather than block on
+    # AMQP). Use `cached?(key)` to distinguish "tombstoned" from
+    # "not cached".
+    def cached_get(key)
+      return nil unless @cache
+
+      @cache_mutex.synchronize do
+        return @cache[key].current_value if @cache.key?(key)
+      end
+      nil
+    end
+
+    # Whether the key is present in the in-memory cache. A tombstoned
+    # key still counts as cached (cached_get returns nil for it).
+    # Returns false if no preload has happened yet (no cache exists).
+    def cached?(key)
+      return false unless @cache
+
+      @cache_mutex.synchronize { @cache.key?(key) }
+    end
+
     def delete(key)
       name = queue_name(key)
       ensure_stream(name)

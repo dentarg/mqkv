@@ -63,8 +63,12 @@ store.close
 ```ruby
 MQKV::Store.new(
   "amqp://localhost",
-  prefix: "myapp",       # Queue name prefix (default: "mqkv")
-  read_timeout: 0.5,      # Seconds to wait when draining stream (default: 0.5)
+  prefix: "myapp",         # Queue name prefix (default: "mqkv")
+  read_timeout: 0.5,       # Seconds to wait when draining stream (default: 0.5)
+  connect_timeout: 5,      # TCP connect timeout in seconds (default: nil, which
+                           # falls back to amqp-client's 30s). Useful at boot to
+                           # fail fast on an unreachable broker instead of
+                           # blocking the caller for ~30s.
   confirm: true,           # Publisher confirms on set/delete (default: true)
   logger: Logger.new($stdout, level: :debug)  # Optional logger (default: nil)
 )

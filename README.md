@@ -103,6 +103,14 @@ store.get("user:1")  # => "new-value"
 
 Pass `max_messages:` to cap how many messages are consumed per key during preload (default: 10,000), preventing OOM on large streams.
 
+For keys whose streams accumulate long histories (e.g. append-only event logs or repeated snapshots), use `preload_latest` instead — it consumes from `x-stream-offset: last`, so only the current value is read regardless of history depth:
+
+```ruby
+store.preload_latest("oom", "competition:5433509")
+```
+
+This is much cheaper at boot when streams hold thousands of messages and callers only care about the latest value. Tombstones are still respected (a tombstone as the latest entry caches as nil). Background watchers behave the same as for `preload`.
+
 Keys that are `set` or `delete`d after preload also get background watchers automatically. Non-preloaded keys fall back to stream consume on `get`.
 
 ## How It Works

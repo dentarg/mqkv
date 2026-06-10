@@ -80,6 +80,14 @@ RSpec.describe MQKV::Store, :integration do
       store.set("h3", "3")
       expect(store.history("h3", limit: 2)).to eq(%w[2 3])
     end
+
+    it "reads past the consumer prefetch window on long streams" do
+      # Regression: with a single ack at the end of the scan, delivery
+      # stalled once CONSUME_PREFETCH messages were outstanding and
+      # history silently saw only the first prefetch window.
+      400.times { |i| store.set("h4", "v#{i}") }
+      expect(store.history("h4", limit: 3)).to eq(%w[v397 v398 v399])
+    end
   end
 
   describe "#preload" do

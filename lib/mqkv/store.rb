@@ -20,6 +20,13 @@ module MQKV
     TOMBSTONE_HEADER = "__mqkv_deleted__"
     EXPIRES_HEADER = "__mqkv_expires_at__"
 
+    # Stream consumers must ack to advance the broker's flow-control
+    # window: with manual acks and a prefetch of N, delivery stalls
+    # after N outstanding messages. Acking every half-window keeps
+    # deliveries flowing while still batching (multiple: true).
+    CONSUME_PREFETCH = 256
+    CONSUME_ACK_BATCH = CONSUME_PREFETCH / 2
+
     def initialize(url, prefix: "mqkv", read_timeout: 0.5, connect_timeout: nil, confirm: true, cache_watchers: true, logger: nil)
       @url = url
       @prefix = prefix
@@ -239,12 +246,17 @@ module MQKV
       publish(name, "", headers: { TOMBSTONE_HEADER => true })
     end
 
+    # Drains the stream from `offset` until it goes quiet for
+    # `read_timeout`. Acks are issued in batches as the scan
+    # progresses; a single ack at the end would stall delivery once
+    # the prefetch window fills and silently truncate longer streams.
     def consume_stream(name, offset:, max_messages: 0)
       ensure_stream(name)
       ch = connection.channel
       begin
-        ch.basic_qos(256)
+        ch.basic_qos(CONSUME_PREFETCH)
         collected = []
+        unacked = 0
         q = ::Queue.new
 
         consume_ok = ch.basic_consume(name, no_ack: false,
@@ -258,10 +270,15 @@ module MQKV
           break if msg.nil?
 
           collected << msg
+          unacked += 1
+          if unacked >= CONSUME_ACK_BATCH
+            ch.basic_ack(msg.delivery_tag, multiple: true)
+            unacked = 0
+          end
           break if max_messages > 0 && collected.size >= max_messages
         end
 
-        ch.basic_ack(collected.last.delivery_tag, multiple: true) if collected.any?
+        ch.basic_ack(collected.last.delivery_tag, multiple: true) if collected.any? && unacked > 0
         ch.basic_cancel(consume_ok.consumer_tag)
         collected
       ensure

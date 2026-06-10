@@ -141,9 +141,9 @@ store.cached?("missing")          # => false
 - **GET**: Returns from cache if preloaded; otherwise consumes from `x-stream-offset: last` and drains. Expired messages return nil.
 - **DELETE**: Publishes a tombstone (header `__mqkv_deleted__: true`, empty body)
 - **EXISTS?**: Delegates to GET, returns boolean
-- **HISTORY**: Consumes from `x-stream-offset: first`, accumulates values, tombstones clear history
+- **HISTORY**: Consumes from `x-stream-offset: first`, tombstones clear history. Memory is bounded: only the last `limit` values are retained while scanning, however long the stream is.
 - **WATCH**: `basic_consume` with `x-stream-offset: next`, yields values in a background thread
-- **PRELOAD**: Consumes full stream per key, caches latest value, starts background watchers
+- **PRELOAD**: Scans the full stream per key (streaming, only the last message is retained), caches latest value, starts background watchers
 
 The connection is lazy and thread-safe (protected by Mutex). Stream queue declarations are cached to avoid redundant round-trips. Stream scans ack in batches as they progress, so streams longer than the consumer prefetch (256) drain fully instead of stalling at the first flow-control window.
 

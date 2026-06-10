@@ -115,25 +115,33 @@ module MQKV
     end
 
     def history(key, limit: 10)
-      messages = consume_stream(queue_name(key), offset: "first")
       values = []
-      messages.each do |msg|
+      consume_stream(queue_name(key), offset: "first") do |msg|
         if tombstone?(msg)
           values.clear
         else
           values << msg.body
+          # Only the last `limit` values can ever be returned, so drop
+          # older ones as we scan — memory stays O(limit) instead of
+          # holding every body in the stream at once.
+          values.shift if values.size > limit
         end
       end
-      values.last(limit)
+      values
     end
 
     def preload(*keys, max_messages: 10_000)
       @cache_mutex.synchronize { @cache ||= {} }
       keys.each do |key|
-        messages = consume_stream(queue_name(key), offset: "first", max_messages: max_messages)
-        entry = resolve_entry(messages)
+        # Only the last message decides the cache entry; stream the
+        # scan so a long history never sits in memory all at once.
+        last = nil
+        count = consume_stream(queue_name(key), offset: "first", max_messages: max_messages) do |msg|
+          last = msg
+        end
+        entry = last ? msg_to_cache_entry(last) : CacheEntry.new(value: nil, expires_at: nil)
         @cache_mutex.synchronize { @cache[key] = entry }
-        log(:debug) { "at=preload key=#{key} messages=#{messages.size} value=#{entry.current_value.nil? ? "nil" : "present"}" }
+        log(:debug) { "at=preload key=#{key} messages=#{count} value=#{entry.current_value.nil? ? "nil" : "present"}" }
         start_cache_watcher(key)
       end
     end
@@ -247,7 +255,11 @@ module MQKV
     end
 
     # Drains the stream from `offset` until it goes quiet for
-    # `read_timeout`. Acks are issued in batches as the scan
+    # `read_timeout`. With a block, each message is yielded as it
+    # arrives and the message count is returned — nothing is retained,
+    # so callers control their own memory. Without a block, all
+    # messages are collected and returned (only suitable for short
+    # reads like offset=last). Acks are issued in batches as the scan
     # progresses; a single ack at the end would stall delivery once
     # the prefetch window fills and silently truncate longer streams.
     def consume_stream(name, offset:, max_messages: 0)
@@ -255,8 +267,10 @@ module MQKV
       ch = connection.channel
       begin
         ch.basic_qos(CONSUME_PREFETCH)
-        collected = []
+        collected = block_given? ? nil : []
+        count = 0
         unacked = 0
+        last = nil
         q = ::Queue.new
 
         consume_ok = ch.basic_consume(name, no_ack: false,
@@ -269,18 +283,25 @@ module MQKV
           msg = q.pop(timeout: @read_timeout)
           break if msg.nil?
 
-          collected << msg
+          count += 1
+          last = msg
+          if collected
+            collected << msg
+          else
+            yield msg
+          end
+
           unacked += 1
           if unacked >= CONSUME_ACK_BATCH
             ch.basic_ack(msg.delivery_tag, multiple: true)
             unacked = 0
           end
-          break if max_messages > 0 && collected.size >= max_messages
+          break if max_messages > 0 && count >= max_messages
         end
 
-        ch.basic_ack(collected.last.delivery_tag, multiple: true) if collected.any? && unacked > 0
+        ch.basic_ack(last.delivery_tag, multiple: true) if last && unacked > 0
         ch.basic_cancel(consume_ok.consumer_tag)
-        collected
+        collected || count
       ensure
         ch.close
       end

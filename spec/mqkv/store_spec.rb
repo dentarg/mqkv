@@ -129,23 +129,21 @@ RSpec.describe MQKV::Store do
     end
 
     it "returns the cached value after preload" do
-      allow(store).to receive(:consume_stream)
-        .and_return([make_msg("hello")])
+      stub_stream_yielding([make_msg("hello")])
       allow(store).to receive(:start_cache_watcher)
       store.preload("k")
       expect(store.cached_get("k")).to eq("hello")
     end
 
     it "returns nil for a tombstoned key in the cache" do
-      allow(store).to receive(:consume_stream)
-        .and_return([make_msg("", tombstone: true)])
+      stub_stream_yielding([make_msg("", tombstone: true)])
       allow(store).to receive(:start_cache_watcher)
       store.preload("k")
       expect(store.cached_get("k")).to be_nil
     end
 
     it "returns nil for a key not in the cache and does not consume the stream" do
-      allow(store).to receive(:consume_stream).and_return([make_msg("ignored")])
+      stub_stream_yielding([make_msg("ignored")])
       allow(store).to receive(:start_cache_watcher)
       store.preload("k1")
 
@@ -160,26 +158,129 @@ RSpec.describe MQKV::Store do
     end
 
     it "is true for a cached value" do
-      allow(store).to receive(:consume_stream)
-        .and_return([make_msg("v")])
+      stub_stream_yielding([make_msg("v")])
       allow(store).to receive(:start_cache_watcher)
       store.preload("k")
       expect(store.cached?("k")).to be true
     end
 
     it "is still true for a tombstoned key" do
-      allow(store).to receive(:consume_stream)
-        .and_return([make_msg("", tombstone: true)])
+      stub_stream_yielding([make_msg("", tombstone: true)])
       allow(store).to receive(:start_cache_watcher)
       store.preload("k")
       expect(store.cached?("k")).to be true
     end
 
     it "is false for a key that was never preloaded or written" do
-      allow(store).to receive(:consume_stream).and_return([make_msg("v")])
+      stub_stream_yielding([make_msg("v")])
       allow(store).to receive(:start_cache_watcher)
       store.preload("seen")
       expect(store.cached?("unseen")).to be false
+    end
+  end
+
+  describe "#delete" do
+    it "publishes a tombstone message" do
+      allow(channel).to receive(:basic_publish_confirm).and_return(true)
+      store.delete("mykey")
+      expect(channel).to have_received(:basic_publish_confirm)
+        .with("", exchange: "", routing_key: "test.mykey",
+              headers: { "__mqkv_deleted__" => true })
+    end
+  end
+
+  describe "#exists?" do
+    it "returns true when get returns a value" do
+      allow(store).to receive(:get).with("key").and_return("value")
+      expect(store.exists?("key")).to be true
+    end
+
+    it "returns false when get returns nil" do
+      allow(store).to receive(:get).with("key").and_return(nil)
+      expect(store.exists?("key")).to be false
+    end
+  end
+
+  # history/preload consume via the block form of consume_stream: each
+  # message is yielded, the count is returned, nothing is retained.
+  def stub_stream_yielding(msgs, *with_args, **with_kwargs)
+    impl = proc do |*_args, **_kwargs, &blk|
+      msgs.each(&blk)
+      msgs.size
+    end
+    if with_args.empty? && with_kwargs.empty?
+      allow(store).to receive(:consume_stream, &impl)
+    else
+      allow(store).to receive(:consume_stream).with(*with_args, **with_kwargs, &impl)
+    end
+  end
+
+  describe "#history" do
+    it "returns all values in order" do
+      msgs = [make_msg("a"), make_msg("b"), make_msg("c")]
+      stub_stream_yielding(msgs, "test.key", offset: "first")
+      expect(store.history("key")).to eq(%w[a b c])
+    end
+
+    it "clears accumulated values on tombstone" do
+      stub_stream_yielding([make_msg("a"), make_msg("b"),
+                            make_msg("", tombstone: true),
+                            make_msg("c")])
+      expect(store.history("key")).to eq(["c"])
+    end
+
+    it "respects limit" do
+      stub_stream_yielding((1..5).map { |i| make_msg(i.to_s) })
+      expect(store.history("key", limit: 3)).to eq(%w[3 4 5])
+    end
+
+    it "applies the limit after a mid-stream tombstone" do
+      stub_stream_yielding([make_msg("old"),
+                            make_msg("", tombstone: true),
+                            *(1..5).map { |i| make_msg(i.to_s) }])
+      expect(store.history("key", limit: 3)).to eq(%w[3 4 5])
+    end
+
+    it "returns empty array when no messages" do
+      stub_stream_yielding([])
+      expect(store.history("key")).to eq([])
+    end
+  end
+
+  describe "#preload" do
+    it "populates cache from stream messages" do
+      msgs = [make_msg("a"), make_msg("b")]
+      stub_stream_yielding(msgs, "test.key", offset: "first", max_messages: 10_000)
+      allow(store).to receive(:start_cache_watcher)
+      store.preload("key")
+      expect(store.get("key")).to eq("b")
+    end
+
+    it "resolves tombstones during preload" do
+      stub_stream_yielding([make_msg("a"), make_msg("", tombstone: true)])
+      allow(store).to receive(:start_cache_watcher)
+      store.preload("key")
+      expect(store.get("key")).to be_nil
+    end
+
+    it "returns cached value without calling consume_stream" do
+      stub_stream_yielding([make_msg("cached")])
+      allow(store).to receive(:start_cache_watcher)
+      store.preload("key")
+
+      allow(store).to receive(:consume_stream).and_raise("should not be called")
+      expect(store.get("key")).to eq("cached")
+    end
+
+    it "falls back to stream for non-cached keys" do
+      stub_stream_yielding([])
+      allow(store).to receive(:start_cache_watcher)
+      store.preload("cached")
+
+      allow(store).to receive(:consume_stream)
+        .with("test.other", offset: "last")
+        .and_return([make_msg("from-stream")])
+      expect(store.get("other")).to eq("from-stream")
     end
   end
 
@@ -207,116 +308,37 @@ RSpec.describe MQKV::Store do
       end
     end
 
-    it "acks in batches so the prefetch window keeps advancing" do
+    it "yields every message and acks in batches so the prefetch window keeps advancing" do
       msgs = (1..300).map { |i| msg_with_tag("v#{i}", i) }
       stub_delivery(msgs)
 
-      result = store.send(:consume_stream, "test.key", offset: "first")
+      bodies = []
+      count = store.send(:consume_stream, "test.key", offset: "first") { |m| bodies << m.body }
 
-      expect(result.size).to eq(300)
+      expect(count).to eq(300)
+      expect(bodies.last).to eq("v300")
       expect(channel).to have_received(:basic_ack).with(128, multiple: true)
       expect(channel).to have_received(:basic_ack).with(256, multiple: true)
       expect(channel).to have_received(:basic_ack).with(300, multiple: true)
     end
 
-    it "acks short reads once at the end" do
+    it "collects messages when no block is given" do
       msgs = (1..3).map { |i| msg_with_tag("v#{i}", i) }
       stub_delivery(msgs)
 
       result = store.send(:consume_stream, "test.key", offset: "first")
 
       expect(result.map(&:body)).to eq(%w[v1 v2 v3])
-      expect(channel).to have_received(:basic_ack).with(3, multiple: true).once
-    end
-  end
-
-  describe "#delete" do
-    it "publishes a tombstone message" do
-      allow(channel).to receive(:basic_publish_confirm).and_return(true)
-      store.delete("mykey")
-      expect(channel).to have_received(:basic_publish_confirm)
-        .with("", exchange: "", routing_key: "test.mykey",
-              headers: { "__mqkv_deleted__" => true })
-    end
-  end
-
-  describe "#exists?" do
-    it "returns true when get returns a value" do
-      allow(store).to receive(:get).with("key").and_return("value")
-      expect(store.exists?("key")).to be true
+      expect(channel).to have_received(:basic_ack).with(3, multiple: true)
     end
 
-    it "returns false when get returns nil" do
-      allow(store).to receive(:get).with("key").and_return(nil)
-      expect(store.exists?("key")).to be false
-    end
-  end
+    it "stops at max_messages" do
+      msgs = (1..10).map { |i| msg_with_tag("v#{i}", i) }
+      stub_delivery(msgs)
 
-  describe "#history" do
-    it "returns all values in order" do
-      msgs = [make_msg("a"), make_msg("b"), make_msg("c")]
-      allow(store).to receive(:consume_stream)
-        .with("test.key", offset: "first").and_return(msgs)
-      expect(store.history("key")).to eq(%w[a b c])
-    end
+      count = store.send(:consume_stream, "test.key", offset: "first", max_messages: 4) { |_m| }
 
-    it "clears accumulated values on tombstone" do
-      msgs = [make_msg("a"), make_msg("b"),
-              make_msg("", tombstone: true),
-              make_msg("c")]
-      allow(store).to receive(:consume_stream).and_return(msgs)
-      expect(store.history("key")).to eq(["c"])
-    end
-
-    it "respects limit" do
-      msgs = (1..5).map { |i| make_msg(i.to_s) }
-      allow(store).to receive(:consume_stream).and_return(msgs)
-      expect(store.history("key", limit: 3)).to eq(%w[3 4 5])
-    end
-
-    it "returns empty array when no messages" do
-      allow(store).to receive(:consume_stream).and_return([])
-      expect(store.history("key")).to eq([])
-    end
-  end
-
-  describe "#preload" do
-    it "populates cache from stream messages" do
-      msgs = [make_msg("a"), make_msg("b")]
-      allow(store).to receive(:consume_stream)
-        .with("test.key", offset: "first", max_messages: 10_000)
-        .and_return(msgs)
-      allow(store).to receive(:start_cache_watcher)
-      store.preload("key")
-      expect(store.get("key")).to eq("b")
-    end
-
-    it "resolves tombstones during preload" do
-      msgs = [make_msg("a"), make_msg("", tombstone: true)]
-      allow(store).to receive(:consume_stream).and_return(msgs)
-      allow(store).to receive(:start_cache_watcher)
-      store.preload("key")
-      expect(store.get("key")).to be_nil
-    end
-
-    it "returns cached value without calling consume_stream" do
-      allow(store).to receive(:consume_stream).and_return([make_msg("cached")])
-      allow(store).to receive(:start_cache_watcher)
-      store.preload("key")
-
-      allow(store).to receive(:consume_stream).and_raise("should not be called")
-      expect(store.get("key")).to eq("cached")
-    end
-
-    it "falls back to stream for non-cached keys" do
-      allow(store).to receive(:consume_stream).and_return([])
-      allow(store).to receive(:start_cache_watcher)
-      store.preload("cached")
-
-      allow(store).to receive(:consume_stream)
-        .with("test.other", offset: "last")
-        .and_return([make_msg("from-stream")])
-      expect(store.get("other")).to eq("from-stream")
+      expect(count).to eq(4)
     end
   end
 
@@ -362,7 +384,7 @@ RSpec.describe MQKV::Store do
 
   describe "cache updates via set/delete" do
     before do
-      allow(store).to receive(:consume_stream).and_return([])
+      stub_stream_yielding([])
       allow(store).to receive(:start_cache_watcher)
       store.preload("key")
       allow(channel).to receive(:basic_publish_confirm).and_return(true)
@@ -382,7 +404,7 @@ RSpec.describe MQKV::Store do
 
   describe "TTL in cache" do
     before do
-      allow(store).to receive(:consume_stream).and_return([])
+      stub_stream_yielding([])
       allow(store).to receive(:start_cache_watcher)
       store.preload("key")
       allow(channel).to receive(:basic_publish_confirm).and_return(true)
@@ -522,7 +544,7 @@ RSpec.describe MQKV::Store do
     end
 
     it "does not start a watcher on preload" do
-      allow(store).to receive(:consume_stream).and_return([make_msg("val")])
+      stub_stream_yielding([make_msg("val")])
       store.preload("k")
       expect(channel).not_to have_received(:basic_consume)
     end
@@ -534,21 +556,21 @@ RSpec.describe MQKV::Store do
     end
 
     it "does not start a watcher on set after preload" do
-      allow(store).to receive(:consume_stream).and_return([make_msg("seed")])
+      stub_stream_yielding([make_msg("seed")])
       store.preload("k")
       store.set("k", "new")
       expect(channel).not_to have_received(:basic_consume)
     end
 
     it "still updates the in-process cache on set" do
-      allow(store).to receive(:consume_stream).and_return([make_msg("seed")])
+      stub_stream_yielding([make_msg("seed")])
       store.preload("k")
       store.set("k", "updated")
       expect(store.get("k")).to eq("updated")
     end
 
     it "still updates the in-process cache on delete" do
-      allow(store).to receive(:consume_stream).and_return([make_msg("seed")])
+      stub_stream_yielding([make_msg("seed")])
       store.preload("k")
       store.delete("k")
       expect(store.get("k")).to be_nil

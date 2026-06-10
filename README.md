@@ -145,7 +145,7 @@ store.cached?("missing")          # => false
 - **WATCH**: `basic_consume` with `x-stream-offset: next`, yields values in a background thread
 - **PRELOAD**: Consumes full stream per key, caches latest value, starts background watchers
 
-The connection is lazy and thread-safe (protected by Mutex). Stream queue declarations are cached to avoid redundant round-trips.
+The connection is lazy and thread-safe (protected by Mutex). Stream queue declarations are cached to avoid redundant round-trips. Stream scans ack in batches as they progress, so streams longer than the consumer prefetch (256) drain fully instead of stalling at the first flow-control window.
 
 ## Performance
 

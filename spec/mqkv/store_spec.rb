@@ -183,6 +183,53 @@ RSpec.describe MQKV::Store do
     end
   end
 
+  describe "#consume_stream" do
+    # Short read_timeout so each spec doesn't idle for the default 0.5s
+    # once the queued messages are drained.
+    let(:store) { described_class.new(url, prefix: "test", read_timeout: 0.05) }
+    let(:consume_ok) { double("ConsumeOk", consumer_tag: "tag-1") }
+
+    def msg_with_tag(body, tag)
+      double("Message", body: body, delivery_tag: tag,
+                        properties: double("Properties", headers: nil))
+    end
+
+    before do
+      allow(channel).to receive(:basic_qos)
+      allow(channel).to receive(:basic_ack)
+      allow(channel).to receive(:basic_cancel)
+    end
+
+    def stub_delivery(msgs)
+      allow(channel).to receive(:basic_consume) do |*_args, **_kwargs, &blk|
+        msgs.each(&blk)
+        consume_ok
+      end
+    end
+
+    it "acks in batches so the prefetch window keeps advancing" do
+      msgs = (1..300).map { |i| msg_with_tag("v#{i}", i) }
+      stub_delivery(msgs)
+
+      result = store.send(:consume_stream, "test.key", offset: "first")
+
+      expect(result.size).to eq(300)
+      expect(channel).to have_received(:basic_ack).with(128, multiple: true)
+      expect(channel).to have_received(:basic_ack).with(256, multiple: true)
+      expect(channel).to have_received(:basic_ack).with(300, multiple: true)
+    end
+
+    it "acks short reads once at the end" do
+      msgs = (1..3).map { |i| msg_with_tag("v#{i}", i) }
+      stub_delivery(msgs)
+
+      result = store.send(:consume_stream, "test.key", offset: "first")
+
+      expect(result.map(&:body)).to eq(%w[v1 v2 v3])
+      expect(channel).to have_received(:basic_ack).with(3, multiple: true).once
+    end
+  end
+
   describe "#delete" do
     it "publishes a tombstone message" do
       allow(channel).to receive(:basic_publish_confirm).and_return(true)

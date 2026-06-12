@@ -25,7 +25,7 @@ jobs:
       - name: Build gem
         run: gem build mqkv.gemspec
 
-      - uses: rubygems/configure-rubygems-credentials@cb088735f97e735ff769f8f7c24158151cc9ca6b
+      - uses: rubygems/configure-rubygems-credentials@0fe86296841519356ad7dd2041187e0578738b91
 
       - name: Push gem
         run: gem push --verbose mqkv-*.gem

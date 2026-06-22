@@ -2,7 +2,10 @@
 
 A Ruby gem that turns an AMQP message broker (RabbitMQ 3.9+ / LavinMQ) into a key-value store using stream queues.
 
-Each key maps to a dedicated stream queue. The latest message is the current value. Deletes are implemented as tombstone messages.
+Two access patterns are provided:
+
+- `MQKV::Store` — each key maps to its own dedicated stream queue. The latest message is the current value; deletes are tombstone messages. Best for a bounded set of keys.
+- `MQKV::Map` — many keys share a *single* stream queue, kept in an in-memory map per process. Best for high-cardinality keyspaces (e.g. per-IP counters) where one queue per key would overwhelm the broker.
 
 ## Requirements
 
@@ -146,6 +149,66 @@ store.cached?("missing")          # => false
 - **PRELOAD**: Scans the full stream per key (streaming, only the last message is retained), caches latest value, starts background watchers
 
 The connection is lazy and thread-safe (protected by Mutex). Stream queue declarations are cached to avoid redundant round-trips. Stream scans ack in batches as they progress, so streams longer than the consumer prefetch (256) drain fully instead of stalling at the first flow-control window.
+
+## Map (many keys, one queue)
+
+`MQKV::Store` declares one stream queue per key. For high-cardinality keyspaces — e.g. a rate-limit counter per client IP — that means one queue per key, which overwhelms the broker. `MQKV::Map` instead stores *all* keys in a single stream (the key travels in a message header) and keeps a process-local `key => value` map fresh with one background consumer:
+
+```ruby
+require "mqkv"
+
+# One stream queue named "mqkv.ratelimit" holds every key.
+map = MQKV::Map.new(
+  "amqp://localhost",
+  name: "ratelimit",
+  max_age: "1h",       # broker truncates messages older than this
+  confirm: false,      # fire-and-forget writes (caching, not durability)
+)
+
+# Loads current state from the stream and starts the background
+# consumer + sweeper. Called lazily on first use; call at boot to pay
+# the load cost up front.
+map.start
+
+map.set("1.2.3.4", "5", ttl: 3600)
+map.get("1.2.3.4")   # => "5" (in-memory lookup, no round-trip)
+map.set("5.6.7.8", "2")
+map.size             # => 2 (live keys held in memory)
+
+map.delete("1.2.3.4")
+map.get("1.2.3.4")   # => nil
+
+map.close
+```
+
+### Configuration
+
+```ruby
+MQKV::Map.new(
+  "amqp://localhost",
+  name: "ratelimit",        # stream name suffix (required)
+  prefix: "mqkv",           # queue is "{prefix}.{name}" (default: "mqkv")
+  max_age: "1h",            # x-max-age retention; accepts "1h" or seconds (default: nil)
+  max_length_bytes: nil,    # x-max-length-bytes size cap (default: nil)
+  read_timeout: 0.5,        # drain idle window in seconds (default: 0.5)
+  confirm: true,            # publisher confirms on set/delete (default: true)
+  sweep_interval: 60,       # seconds between in-memory expired-entry sweeps (default: 60)
+  sync_timeout: 30,         # max seconds to wait for the initial scan on start (default: 30)
+  logger: nil,              # optional logfmt logger (default: nil)
+)
+```
+
+### How it works
+
+- **One queue**: All keys live in `{prefix}.{name}`, declared with `x-max-age` / `x-max-length-bytes` so the broker truncates old messages.
+- **SET / DELETE**: Publishes a message tagged with header `__mqkv_key__`; the local map is updated immediately so the writer reads its own writes without lag. `delete` publishes a tombstone.
+- **GET**: In-memory hash lookup. Per-key TTLs (header `__mqkv_expires_at__`) expire entries on read.
+- **start / load**: A single consumer reads the stream from the beginning to rebuild the map, then keeps delivering live writes from other processes. A sync marker is published *before* subscribing — it marks the catch-up point and primes the stream, since a `x-stream-offset: first` consumer attached to a stream with no committed chunk never enters live-tail mode and receives nothing until one exists.
+- **Bounded memory**: A background sweeper drops expired entries, so memory tracks the live key set rather than every key ever written within the stream's retention.
+
+### Consistency
+
+Writes are visible **in-process immediately** and propagate to other processes as the broker fans the message out to their consumers (sub-millisecond on a local broker). There is no atomic read-modify-write across processes — it is last-write-wins, eventually consistent. Counters built on top (rate limiters, etc.) are therefore **approximate** across processes: under contention a value can briefly over- or under-count. That is the standard trade-off for a distributed counter without server-side atomic operations.
 
 ## Performance
 
